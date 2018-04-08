@@ -14,6 +14,7 @@ from collections import Counter
 import numpy as np
 from igraph import *
 import requests
+import pandas as pd
 
 
 ######### FUNCTIONS DECLARATION
@@ -27,7 +28,7 @@ def import_data_CRM():
     page = 1
     users = []
     while(True):
-        request = '/omn_crawler/get_om_user_profiles?' + 'page=' + str(page)
+        request = '/omn_crawler/get_om_user_profiles?' + 'page=' + str(page)+'&api_key=thisisinsightapikey'
         # send a request
         res = requests.get(insightSetting + request)
         
@@ -342,7 +343,288 @@ def show_map_network():
     html_map = map_comm.get_root().render()
     return html_map
 
+###################################
+## ADVANCED ANALYTICS FUNCTIONS
+###################################
 
+def build_radius(cent_measure):
+    meas=np.asarray(cent_measure)
+    radius=np.divide(meas,np.amax(meas))
+    return radius*10.0
+
+###### SHOW MEMBER'S OWN COMMUNITY
+def show_mID_community(mID):
+    '''
+    Shows the network structure of the community of
+    the member mID (node in yellow)
+    '''
+    color='blue'
+    
+    #Build OM network
+    sub_g=build_OM_network()
+    
+    #check if mID is isolated
+    vs_ID=sub_g.vs.find(ID=mID)
+    if vs_ID.degree()==0:
+        #sys.exit("You have no connection with other OM members please improve your profile.")
+        return "You have no connection with other OM members please improve your profile."
+        
+        
+    #Compute communities
+    #remove isolated nodes
+    pruned_vs = sub_g.vs.select(_degree_gt=0)
+    pruned_graph = sub_g.subgraph(pruned_vs)
+    
+    #Only return communities with at least a number of nodes >= n_vertex_limit
+    n_vertex_limit=2
+    comm_sg=find_communities_louvain(pruned_graph,n_vertex_limit)
+    
+    #search for mID in the communities
+    
+    vs_ID=[]
+    for i in comm_sg:
+        try: 
+            vs_ID=i.vs.find(ID=mID)
+            comm_ID=i
+        except ValueError:
+            pass
+    
+    #Radius proportional to betweenness
+    betw=comm_ID.vs.betweenness()
+    betw=build_radius(betw)
+    
+    #Initialising map, centered on Europe
+    geolocator = Nominatim()
+    Europe = geolocator.geocode('Europe')
+    map_comm = folium.Map(location=[Europe.latitude, Europe.longitude],
+                     zoom_start=4)
+    i=[]
+    #In the map we add a set of circles corresponding to the geo. position of the Explorer members
+    for i in range(0,len(comm_ID.vs)):
+        folium.CircleMarker(location=[comm_ID.vs(i)["lat"][0],comm_ID.vs(i)["lon"][0]], 
+                             popup=str(sub_g.vs(i)["ID"][0]),
+                             radius=betw[i],
+                             fill=True,
+                             line_color=color,
+                             fill_color=color,
+                             fill_opacity=1.0
+                             #clustered_marker = True
+                             ).add_to(map_comm)
+
+        #We now draw lines connecting the affine members
+    #i=neigh[0]
+        #We now draw lines connecting the affine members
+        neigh=comm_ID.neighbors(i)
+        #neigh is the subgraph of all the nodes connected to node i
+        location=[comm_ID.vs(i)["lat"][0], comm_ID.vs(i)["lon"][0]]
+        for k in neigh:
+            location2=[comm_ID.vs(k)["lat"][0], comm_ID.vs(k)["lon"][0]]
+            points=(tuple(location),tuple(location2))
+            folium.PolyLine(points, color="red", weight=0.3,opacity=0.2).add_to(map_comm)
+        
+    folium.CircleMarker(location=[vs_ID["lat"],vs_ID["lon"]], 
+                             popup=str(vs_ID["ID"]),
+                             radius=vs_ID.betweenness(),
+                             fill=True,
+                             line_color='yellow',
+                             fill_color='yellow',
+                             fill_opacity=1.0
+                             #clustered_marker = True
+                             ).add_to(map_comm)
+
+    html_map = map_comm.get_root().render()
+    return html_map
+
+####### SHOW MEMBER'S POSITION IN THE NETWORK
+    
+def show_neigh_network(mID):
+    color='blue'
+    
+    #Build OM network
+    sub_g=build_OM_network()
+    
+    # find neighbour of mID
+    vs_ID=sub_g.vs.find(ID=mID)
+    neigh=sub_g.neighborhood(vs_ID)
+    
+    #Initialising map, centered on Europe
+    geolocator = Nominatim()
+    Europe = geolocator.geocode('Europe')
+    map_comm = folium.Map(location=[Europe.latitude, Europe.longitude],
+                     zoom_start=4)
+    
+    #In the map we add a set of circles corresponding to the geo. position of the Explorer members
+    for i in neigh:
+        folium.CircleMarker(location=[sub_g.vs(i)["lat"][0],sub_g.vs(i)["lon"][0]], 
+                             popup=str(sub_g.vs(i)["ID"][0]),
+                             radius=10,
+                             fill=True,
+                             line_color=color,
+                             fill_color=color,
+                             fill_opacity=1.0
+                             #clustered_marker = True
+                             ).add_to(map_comm)
+    
+    folium.CircleMarker(location=[vs_ID["lat"],vs_ID["lon"]], 
+                             popup=str(vs_ID["ID"]),
+                             radius=10,
+                             fill=True,
+                             line_color='yellow',
+                             fill_color='yellow',
+                             fill_opacity=1.0
+                             #clustered_marker = True
+                             ).add_to(map_comm)
+
+        #We now draw lines connecting the affine members
+    #i=neigh[0]
+    location=[vs_ID["lat"],vs_ID["lon"]]
+    for k in neigh:
+        location2=[sub_g.vs(k)["lat"][0], sub_g.vs(k)["lon"][0]]
+        points=(tuple(location),tuple(location2))
+        folium.PolyLine(points, color="red", weight=0.4,opacity=1).add_to(map_comm)
+    
+    
+    html_map = map_comm.get_root().render()
+    return html_map
+
+##########################################
+####   BEGIN OF RECC. MODULE
+##########################################
+    
+### Recc. according to communities
+def recc_mID_comm(mID,cent_metric):
+    
+    allowed_cent=['betw','deg','clos','PR']
+    if cent_metric not in allowed_cent:
+        print "Please insert a valid centrality measure:'betw','deg','clos','PR'"
+        return
+
+    sub_g=build_OM_network()
+
+    #Compute communities
+    #remove isolated nodes
+    pruned_vs = sub_g.vs.select(_degree_gt=0)
+    pruned_graph = sub_g.subgraph(pruned_vs)
+
+    #Only return communities with at least a number of nodes >= n_vertex_limit
+    n_vertex_limit=2
+    comm_sg=find_communities_louvain(pruned_graph,n_vertex_limit)
+
+    #find member community
+    vs_ID=[]
+    for i in comm_sg:
+        try: 
+            vs_ID=i.vs.find(ID=mID)
+            comm_ID=i
+        except ValueError:
+            pass
+
+    #compute centrality metrics
+    if cent_metric == 'betw':
+        metric=comm_ID.vs.betweenness()
+    elif cent_metric == 'deg':
+        metric=comm_ID.vs.degree()
+    elif cent_metric == 'clos':
+        metric=comm_ID.closeness()
+    elif cent_metric == 'PR':
+        metric=comm_ID.pagerank()
+
+    ID=[]
+    for i in range(0,len(comm_ID.vs)):
+        ID.append(str(comm_ID.vs[i]['ID']))
+
+    df = pd.DataFrame({ 
+        'ID':ID,
+        'met':metric
+    })  
+
+    s_df=df.sort_values(by=['met'],ascending=False)
+    top_3=s_df.values[0:3];
+
+    top_3=top_3.tolist()
+    return json.dumps(top_3)
+
+####### Rec. according to global network
+
+def recc_mID_network(mID,cent_metric):
+
+    allowed_cent=['betw','deg','clos','PR']
+    if cent_metric not in allowed_cent:
+        print "Please insert a valid centrality measure:'betw','deg','clos','PR'"
+        return
+    
+    sub_g=build_OM_network()
+
+    #compute centrality metrics
+    if cent_metric == 'betw':
+        metric=sub_g.vs.betweenness()
+    elif cent_metric == 'deg':
+        metric=sub_g.vs.degree()
+    elif cent_metric == 'clos':
+        metric=sub_g.closeness()
+    elif cent_metric == 'PR':
+        metric=sub_g.pagerank()
+
+    ID=[]
+    for i in range(0,len(sub_g.vs)):
+        ID.append(str(sub_g.vs[i]['ID']))
+
+    df = pd.DataFrame({ 
+        'ID':ID,
+        'met':metric
+    })  
+
+    s_df=df.sort_values(by=['met'],ascending=False)
+    top_3=s_df.values[0:3];
+
+    top_3=top_3.tolist()
+    return json.dumps(top_3)
+
+#### Recc. according to the member's neighbourhood
+def recc_mID_neigh(mID,cent_metric):
+
+    allowed_cent=['betw','deg','clos','PR']
+    if cent_metric not in allowed_cent:
+        print "Please insert a valid centrality measure:'betw','deg','clos','PR'"
+        return
+    
+    sub_g=build_OM_network()
+    
+    # find neighbour of mID
+    vs_ID=sub_g.vs.find(ID=mID)
+    neigh=sub_g.neighborhood(vs_ID)
+    nei_g=sub_g.subgraph(neigh)
+
+    #compute centrality metrics
+    if cent_metric == 'betw':
+        metric=nei_g.vs.betweenness()
+    elif cent_metric == 'deg':
+        metric=nei_g.vs.degree()
+    elif cent_metric == 'clos':
+        metric=nei_g.closeness()
+    elif cent_metric == 'PR':
+        metric=nei_g.pagerank()
+
+    ID=[]
+    for i in range(0,len(nei_g.vs)):
+        ID.append(str(nei_g.vs[i]['ID']))
+
+    df = pd.DataFrame({ 
+        'ID':ID,
+        'met':metric
+    })  
+
+    s_df=df.sort_values(by=['met'],ascending=False)
+    top_3=s_df.values[0:3];
+
+    top_3=top_3.tolist()
+    return json.dumps(top_3)
+
+
+
+#####################################
+### EMPTY MAP OF EUROPE, JUST TO TEST
+#######################
 def show_EU_map():
 #Create empty map of Europe
     geolocator = Nominatim()
@@ -360,9 +642,9 @@ def show_EU_map():
     return map_EU_ht
     #return json_map
 
-############################### 
-######### Begin of API ########
-###############################    
+######################################### 
+######### Begin of API INTERFACE ########
+#########################################    
 app = Flask(__name__)
 
 
@@ -387,5 +669,50 @@ def Network_comm():
 def Network_tags():
     return show_comm_tags()
 
+@app.route('/show_mID_neigh/<name>')
+def show_mID_neigh(name):
+     mID='{}'.format(name)
+     mID=int(mID)
+     return show_neigh_network(mID)
+
+@app.route('/show_mID_comm/<name>')
+def show_mID_comm(name):
+     mID='{}'.format(name)
+     mID=int(mID)
+     return show_mID_community(mID)
+
+###################################
+#####  Begin of API Recc. Module
+###################################
+
+@app.route('/rec_mID_neigh/<name>')
+def reccom_mID_neigh(name):
+    req='{}'.format(name)
+    req=req.split("&") 
+    mID=req[0]
+    mID=int(mID)
+    cent_metric=req[1]
+    return recc_mID_neigh(mID,cent_metric)
+ 
+@app.route('/rec_mID_network/<name>')
+def reccom_mID_network(name):
+    req='{}'.format(name)
+    req=req.split("&") 
+    mID=req[0]
+    mID=int(mID)
+    cent_metric=req[1]
+    return recc_mID_network(mID,cent_metric)
+ 
+@app.route('/rec_mID_comm/<name>')
+def reccom_mID_comm(name):
+    req='{}'.format(name)
+    req=req.split("&") 
+    mID=req[0]
+    mID=int(mID)
+    cent_metric=req[1]
+    return recc_mID_comm(mID,cent_metric)
+    
+
+
 if __name__ == '__main__':
-   app.run()
+   app.run(port=5001)
