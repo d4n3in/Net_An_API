@@ -501,6 +501,11 @@ def recc_mID_comm(mID,cent_metric):
 
     sub_g=build_OM_network()
 
+    #check if mID is isolated
+    vs_ID=sub_g.vs.find(ID=mID)
+    if vs_ID.degree()==0:
+        return "You have no connections with other OM members please improve your profile."
+
     #Compute communities
     #remove isolated nodes
     pruned_vs = sub_g.vs.select(_degree_gt=0)
